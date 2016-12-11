@@ -319,6 +319,7 @@ export default function webpackConfigFactory(buildOptions: BuildOptions) {
               // Include sourcemaps for dev experience++.
               query: { sourceMap: true },
             },
+            { path: 'postcss-loader' },
           ],
         }),
       ),
@@ -496,13 +497,13 @@ export default function webpackConfigFactory(buildOptions: BuildOptions) {
             ifProdClient(() => ({
               loader: ExtractTextPlugin.extract({
                 fallbackLoader: 'style-loader',
-                loader: ['css-loader'],
+                loaders: ['css-loader', 'postcss-loader'],
               }),
             })),
             // When targetting the server we use the "/locals" version of the
             // css loader, as we don't need any css files for the server.
             ifNode({
-              loaders: ['css-loader/locals'],
+              loaders: ['css-loader/locals', 'postcss-loader'],
             }),
           ),
         ),
