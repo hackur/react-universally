@@ -2,16 +2,16 @@
 
 import path from 'path';
 import appRootDir from 'app-root-dir';
-import ListenerManager from './listenerManager';
-import { createNotification } from '../utils';
+import { spawn } from 'child_process';
+import { log } from '../utils';
 
 class HotNodeServer {
-  listenerManager: ?ListenerManager;
   watcher: any;
+  disposing: bool;
+  server: ?Object;
 
   constructor(name: string, compiler : Object) {
-    this.listenerManager = null;
-    this.watcher = null;
+    let firstMessageOutput = false;
 
     const compiledEntryFile = path.resolve(
       appRootDir.get(),
@@ -19,65 +19,72 @@ class HotNodeServer {
       `${Object.keys(compiler.options.entry)[0]}.js`,
     );
 
-    compiler.plugin('compile', () =>
-      createNotification({
+    compiler.plugin('compile', () => {
+      firstMessageOutput = false;
+      log({
         title: name,
         level: 'info',
         message: 'Building new bundle...',
-      }),
-    );
+      });
+    });
 
-    const startServer = () => {
-      try {
-        // The server bundle  will automatically start the web server just by
-        // requiring it. It returns the http listener too.
-        // $FlowFixMe
-        const listener = require(compiledEntryFile).default;
-        this.listenerManager = new ListenerManager(listener, name);
-
-        listener.on('listening', () => {
-          const { address, port } = listener.address();
-          const url = `http://${address}:${port}`;
-          createNotification({
-            title: 'server',
-            level: 'info',
-            message: `Running on ${url} with latest changes.`,
-            open: url,
-          });
-        });
-      } catch (err) {
-        createNotification({
-          title: 'server',
-          level: 'error',
-          message: 'Failed to start, please check the console for more information.',
-        });
-        console.log(err);
-      }
-    };
 
     compiler.plugin('done', (stats) => {
-      if (stats.hasErrors()) {
-        createNotification({
-          title: 'server',
-          level: 'error',
-          message: 'Build failed, check the console for more information.',
-        });
-        console.log(stats.toString());
+      if (this.disposing) {
         return;
       }
 
-      // Make sure our newly built server bundles aren't in the module cache.
-      Object.keys(require.cache).forEach((modulePath) => {
-        if (modulePath.indexOf(compiler.options.output.path) !== -1) {
-          delete require.cache[modulePath];
+      try {
+        if (this.server) {
+          this.server.kill();
+          this.server = null;
         }
-      });
 
-      // Shut down any existing running listener if necessary.
-      if (this.listenerManager) {
-        this.listenerManager.dispose(true).then(startServer);
-      } else {
-        startServer();
+        if (stats.hasErrors()) {
+          log({
+            title: name,
+            level: 'error',
+            message: 'Build failed, check the console for more information.',
+            notify: true,
+          });
+          console.log(stats.toString());
+          return;
+        }
+
+        const newServer = spawn('node', [compiledEntryFile]);
+
+        log({
+          title: 'server',
+          level: 'info',
+          message: 'Server running with latest changes. Check the console for more info.',
+          notify: true,
+        });
+
+        newServer.stdout.on('data', (data) => {
+          const message = data.toString().trim();
+          log({
+            title: 'server',
+            level: 'info',
+            message,
+          });
+        });
+        newServer.stderr.on('data', (data) => {
+          const message = data.toString().trim();
+          log({
+            title: 'server',
+            level: 'error',
+            message,
+          });
+        });
+        this.server = newServer;
+      } catch (err) {
+        log({
+          title: name,
+          level: 'error',
+          message: 'Failed to start, please check the console for more information.',
+          notify: true,
+        });
+        console.log(err);
       }
     });
 
@@ -86,12 +93,13 @@ class HotNodeServer {
   }
 
   dispose() {
-    const stopWatcher = () => new Promise(resolve => this.watcher.close(resolve));
+    this.disposing = true;
 
-    return Promise.all([
-      this.watcher ? stopWatcher() : Promise.resolve(),
-      this.listenerManager ? this.listenerManager.dispose() : Promise.resolve(),
-    ]);
+    const stopWatcher = new Promise((resolve) => {
+      this.watcher.close(resolve);
+    });
+
+    return stopWatcher.then(() => this.server && this.server.kill());
   }
 }
 
